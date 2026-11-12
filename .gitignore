@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.remotion/
+remotion/out/
+*/remotion/out/
+.DS_Store
+qa/
+*/qa/
