@@ -1,18 +1,22 @@
 // data.ts — timeline access + scene state + HUD states + SFX cues
-// «РУСЬ: БИТВА ЗА 1000 ЛЕТ» — серия 1 «СТАРТ» (862–945), v2 реалити-турнир.
+// «ТЁМНАЯ РУСЬ» — серия 1 «ОНА СКАЗАЛА "ДА"» (Ольга, 945–964), v3 story-first.
+// Три варианта хука (A/B/C) — активный определяется ключом "hook" в timeline.json.
 import timelineJson from "./timeline.json";
 
 export type Word = { text: string; start: number; end: number; color?: string | null };
 export type Group = { start: number; end: number; words: Word[] };
 export type Line = {
-  id: string; beat: string; tempo: number; text: string;
+  id: string; file?: string; beat: string; tempo: number; text: string;
   start: number; end: number; dur: number;
   words: { text: string; start: number; end: number }[];
   groups: Group[];
 };
 
 export const FPS = 30;
-export const TIMELINE = timelineJson as { voice: string; fps: number; lines: Line[]; totalDuration: number };
+export const TIMELINE = timelineJson as {
+  voice: string; model: string; fps: number; hook?: string;
+  lines: Line[]; totalDuration: number;
+};
 export const LINES = TIMELINE.lines;
 export const TOTAL = TIMELINE.totalDuration;
 export const DURATION_IN_FRAMES = Math.ceil(TOTAL * FPS);
@@ -22,6 +26,10 @@ for (const l of LINES) byId[l.id] = l;
 
 export const line = (id: string): Line => byId[id];
 
+/** вариант хука в этой сборке (timeline пишется gen-vo.py per-вариантно) */
+export const HOOK_ID = TIMELINE.hook ?? "hookA";
+export const HOOK: "A" | "B" | "C" = (HOOK_ID.slice(-1) as "A" | "B" | "C");
+
 /** start/end time of a word by index within a line */
 export const wordTime = (id: string, idx: number, edge: "start" | "end" = "start"): number => {
   const l = byId[id];
@@ -30,180 +38,143 @@ export const wordTime = (id: string, idx: number, edge: "start" | "end" = "start
   return w[edge];
 };
 
-// ============ РОСТЕР ИГРОКОВ (сетка 4×3) ============
-export const ROSTER = [
-  { name: "НОВГОРОД", role: "ТОРГАШ", color: "steel" },
-  { name: "КИЕВ", role: "КРАСАВЧИК", color: "gold" },
-  { name: "ХАЗАРИЯ", role: "БОСС · ДАНЬ", color: "red" },
-  { name: "ВИЗАНТИЯ", role: "ДЕРЖАВА", color: "steel" },
-  { name: "БУЛГАР", role: "КОННИЦА", color: "ink" },
-  { name: "ПОЛОЦК", role: "СЕВЕР", color: "ink" },
-  { name: "ЧЕРНИГОВ", role: "ВОСТОК", color: "ink" },
-  { name: "СМОЛЕНСК", role: "ДНЕПР", color: "ink" },
-  { name: "ПСКОВ", role: "КРЕПОСТЬ", color: "ink" },
-  { name: "МУРОМ", role: "ЛЕС", color: "ink" },
-  { name: "РЯЗАНЬ", role: "ЮГ", color: "ink" },
-  { name: "?", role: "ПОЗЖЕ", color: "ghost" },  // Москва · 1147
-] as const;
-
 // ============ SCENE STATE (все переходы привязаны к словам) ============
-// hook: Тысяча(0) лет(1) Двенадцать(2) игроков(3) Выживет(4) один(5) И(6)
-//   это(7) будет(8) та(9) которой(10) ещё(11) нет(12) на(13) карте(14)
+// hookA: Ей(0) предложили(1) выйти(2) замуж(3) за(4) убийцу(5) мужа(6) Она(7) сказала(8) да(9)
+// hookB: Она(0) сожгла(1) целый(2) город(3) Из(4) за(5) трёх(6) голубей(7)
+// hookC: Убийцы(0) мужа(1) сделали(2) ей(3) предложение(4) Через(5) год(6) от(7) них(8) ничего(9) не(10) осталось(11)
+// shock-слово хука: «да»(A,9) / «голубей»(B,7) / «осталось»(C,11)
+const SHOCK_IDX = HOOK === "A" ? 9 : HOOK === "B" ? 7 : 11;
 
 export const SCENE = {
-  // хук: слэм «1000 ЛЕТ» -> «12 ИГРОКОВ» -> «ВЫЖИВЕТ ОДИН» -> слот «?»
-  titleSlam: wordTime("hook", 0, "start"),        // «Тысяча» -> 1000 ЛЕТ + boom
-  playersIn: wordTime("hook", 2, "start"),        // «Двенадцать» -> 12 ИГРОКОВ
-  surviveStamp: wordTime("hook", 4, "start"),     // «Выживет» -> ВЫЖИВЕТ ОДИН
-  slotIn: wordTime("hook", 10, "start"),          // «которой» -> слот №12 «?»
-  hookOut: line("hook").end + 0.12,               // хук уходит
+  // хук: жёсткий кат на 0.0с -> титул к 0.5с -> стоп-момент на shock-слове
+  faceIn: line("hook").start,                 // лицо/город сразу, БЕЗ фейда
+  hookTitle: wordTime("hook", 0),             // слэм-титул
+  hookShock: wordTime("hook", SHOCK_IDX),     // стоп-кадр: ДА / ГОРОД / НЕ СТАЛО
+  hookOut: line("hook").end + 0.15,
 
-  // ростер: сетка 4×3 -> роли -> призрак вылетает
-  hudIn: wordTime("roster", 0, "start"),          // «Правила» -> HUD + сетка
-  ghostOut: wordTime("roster", 6, "start"),       // «вылетают» -> тайл гаснет с ✕
-  kievHi: wordTime("roster", 8, "start"),         // «Киев» -> КРАСАВЧИК
-  novgorodHi: wordTime("roster", 10, "start"),    // «Новгород» -> ТОРГАШ
-  khazariaHi: wordTime("roster", 12, "start"),    // «Хазария» -> БОСС
-  rosterOut: line("roster").end + 0.25,           // сетка уходит
+  // контекст: 945 -> Игорь -> слэш
+  hudIn: wordTime("context", 0),              // «Реальная» -> HUD + плашка
+  igorIn: wordTime("context", 2),             // «945» -> карточка Игоря (ранний вход, кадр не пустует)
+  igorDead: wordTime("context", 8),           // «мужа» -> красный слэш
+  contextOut: line("context").end + 0.2,
 
-  // призвание: 862 -> племена дерутся -> наняли -> цитата
-  year862: wordTime("invite", 0, "start"),        // «862» -> слэм года
-  tribesFight: wordTime("invite", 2, "start"),    // «Племена» -> точки дерутся
-  hireCard: wordTime("invite", 13, "start"),      // «наняли» -> РЮРИК · АУТСОРС
-  quoteIn: wordTime("invite", 16, "start"),       // «Земля» -> пергамент печатается
-  quoteOut: wordTime("oleg", 0, "start") - 0.15,  // свиток уходит перед Олегом
+  // расчёт Мала
+  malIn: wordTime("mal", 2),                  // «Мал» -> карточка
+  schemeIn: wordTime("mal", 9),               // «жена» -> чип-схема
+  malOut: line("mal").end + 0.2,
 
-  // олег: путь -> хозяева гаснут -> склеил -> РУСЬ
-  olegCard: wordTime("oleg", 2, "start"),         // «Олег» -> карточка + НОВГОРОД
-  kievIn: wordTime("oleg", 5, "start"),           // «Киев» -> КИЕВ + путь прочерчивается
-  ownersOut: wordTime("oleg", 6, "start"),        // «вырезал» -> точки хозяев гаснут
-  glueIn: wordTime("oleg", 9, "start"),           // «склеил» -> нить золотеет
-  rusSlam: wordTime("oleg", 16, "start"),         // «появилась» -> слэм РУСЬ
-  olegOut: line("oleg").end + 0.2,
+  // план: ДА + три мести
+  daMini: wordTime("plan", 2),                // «да» -> мини-слэм ДА.
+  threeIn: wordTime("plan", 7),               // «три» -> счётчик 1·2·3
+  planOut: line("plan").end + 0.2,
 
-  // царьград: ворота -> ладьи -> щит -> оттиск
-  year907: wordTime("tsargrad", 0, "start"),      // «907» -> слэм года
-  boatsIn: wordTime("tsargrad", 2, "start"),      // «бьёт» -> ладьи плывут
-  tsarIn: wordTime("tsargrad", 5, "start"),       // «Царьграду» -> ворота + чип
-  shieldHit: wordTime("tsargrad", 12, "start"),   // «прибил» -> щит слэмится
-  weStamp: wordTime("tsargrad", 16, "start"),     // «мы» -> МЫ БЫЛИ ЗДЕСЬ
-  tsarOut: line("tsargrad").end + 0.2,
+  // месть 1: лодья -> яма -> закопана -> штамп
+  r1Boat: wordTime("revenge1", 3),            // «приплыли» -> драккар плывёт
+  r1Pit: wordTime("revenge1", 10),            // «выкопать» -> яма открывается
+  r1Sink: wordTime("revenge1", 13),           // «закопала» -> лодья уходит в яму
+  r1Stamp: wordTime("revenge1", 15),          // «живьём» -> штамп МЕСТЬ 1/3
+  r1Out: line("revenge1").end + 0.25,
 
-  // топ карты: борд -> Хазария -> мечи -> по мечу с дома
-  boardIn: wordTime("top", 1, "start"),           // «топ» -> панель ТОП КАРТЫ
-  khanatGlow: wordTime("top", 7, "start"),        // «Хазария» -> корона + свечение
-  swordsFly: wordTime("top", 12, "start"),        // «мечами» -> мечи летят
-  tributeStamp: wordTime("top", 14, "start"),     // «мечу» -> ПО МЕЧУ С ДОМА
-  boardOut: line("top").end + 0.2,
+  // месть 2: баня -> дверь -> огонь
+  r2Banya: wordTime("revenge2", 6),           // «баню» -> сруб с паром
+  r2Door: wordTime("revenge2", 8),            // «дверь» -> захлоп + шейк
+  r2Fire: wordTime("revenge2", 10),           // «подожгла» -> огонь по срубу
+  r2Stamp: wordTime("revenge2", 10) + 0.35,   // штамп МЕСТЬ 2/3
+  r2Out: line("revenge2").end + 0.25,
 
-  // игорь: 945 -> карточка -> плохой ход -> падение
-  year945: wordTime("igor", 0, "start"),          // «945» -> слэм года
-  igorCard: wordTime("igor", 3, "start"),         // «Игорь» -> карточка + дань
-  badMove: wordTime("igor", 10, "start"),         // «Плохой» -> штамп ПЛОХОЙ ХОД
-  igorFall: wordTime("igor", 13, "start"),        // «убили» -> карточка падает
-  igorOut: line("igor").end + 0.2,
+  // месть 3: голубь -> сера -> полёт -> город -> огонь -> штамп
+  r3Dove: wordTime("revenge3", 9),            // «голубя» -> голубь крупно
+  r3Sulfur: wordTime("revenge3", 13),         // «серу» -> сера на лапах
+  r3Fly: wordTime("revenge3", 14),            // «Птицы» -> 3 голубя летят
+  r3City: wordTime("revenge3", 16),           // «домой» -> Искоростень
+  r3Fire: wordTime("revenge3", 17),           // «Искоростень» -> огонь охватывает
+  r3Stamp: wordTime("revenge3", 18),          // «сгорел» -> штамп МЕСТЬ 3/3
+  r3Out: line("revenge3").end + 0.3,
 
-  // клифф: Ольга -> конверт -> ДА. -> следующая серия
-  olgaCard: wordTime("cliff", 6, "start"),        // «Ольгу» -> карточка из тени
-  inviteEnv: wordTime("cliff", 7, "start"),       // «замуж» -> конверт с печатью
-  daSlam: wordTime("cliff", 13, "start"),         // «да» -> гигантское ДА.
-  nextSeries: wordTime("cliff", 19, "start"),     // «следующей» -> СЕРИЯ 2 →
+  // итог: корона + древлян нет
+  aCrown: wordTime("after", 5),               // «первой» -> Ольга в короне
+  aGone: wordTime("after", 9),                // «древлян» -> СНЯТЫ С КАРТЫ
+  afterOut: line("after").end + 0.2,
+
+  // клифф: Святослав -> ИДУ НА ВЫ
+  cSon: wordTime("cliff", 1),                 // «сын» -> карточка Святослава
+  cNext: wordTime("cliff", 9),                // «Серия» -> чип СЕРИЯ 2
+  cIdu: wordTime("cliff", 11),                // «Иду» -> слэм ИДУ НА ВЫ
   cliffOut: line("cliff").end + 0.15,
 
   // эндкард-голосование
-  voteIn: wordTime("teaser", 0, "start"),         // «Пиши» -> панель голосования
-  optA: wordTime("teaser", 3, "start"),           // «месть» -> опция 1
-  optB: wordTime("teaser", 6, "start"),           // «конец» -> опция 2
-  endCardIn: wordTime("teaser", 8, "start"),      // «Серия» -> эндкард + CTA
+  tVote: wordTime("teaser", 0),               // «Пиши» -> панель
+  tOptA: wordTime("teaser", 3),               // «один» -> опция 1
+  tOptB: wordTime("teaser", 6),               // «два» -> опция 2
+  tCta: wordTime("teaser", 8, "end") + 0.05,  // CTA после опций
 };
 
 // ============ HUD STATE ============
 
-export type HudStep = { t: number; value: number; flash?: string };
+export type RevengeStep = { t: number; value: number };
 
-export const HUD_YEAR: HudStep[] = [
-  { t: SCENE.hudIn - 0.02, value: 900 },                     // часы заводятся
-  { t: SCENE.hudIn + 0.05, value: 862, flash: "yellow" },     // старт сезона
-  { t: SCENE.kievIn + 0.05, value: 882, flash: "yellow" },    // Олег в Киеве
-  { t: SCENE.year907 + 0.03, value: 907, flash: "yellow" },   // поход на Царьград
-  { t: SCENE.year945 + 0.03, value: 945, flash: "yellow" },   // смерть Игоря
+export const HUD_REVENGE: RevengeStep[] = [
+  { t: SCENE.threeIn, value: 0 },
+  { t: SCENE.r1Stamp, value: 1 },
+  { t: SCENE.r2Stamp, value: 2 },
+  { t: SCENE.r3Stamp, value: 3 },
 ];
-
-export const HUD_IN_GAME: HudStep[] = [
-  { t: SCENE.hudIn, value: 12 },                              // в сезоне 1 никто не вылетел
-];
-
-export type MainStep = { t: number; value: string; flash?: string };
-
-export const HUD_MAIN: MainStep[] = [
-  { t: SCENE.hudIn, value: "—" },
-  { t: SCENE.khanatGlow, value: "ХАЗАРИЯ", flash: "red" },    // босс подтверждён
-];
-
-export const fmtYear = (n: number): string => String(Math.round(n));
 
 // ============ SFX CUES ============
 
 export type Sfx = { file: string; t: number; gain?: number };
 
 export const SFX_CUES: Sfx[] = [
-  // ветер эпохи: подложка хука и ростера (3 проигрыша покрывают ~14 с)
-  { file: "wind.wav", t: 0.05, gain: 0.5 },
-  { file: "wind.wav", t: 7.15, gain: 0.42 },
-  { file: "wind.wav", t: 14.35, gain: 0.3 },
-  // хук: слэмы
-  { file: "boom.wav", t: SCENE.titleSlam, gain: 0.9 },
-  { file: "pop1.wav", t: SCENE.playersIn, gain: 0.5 },
-  { file: "sting.wav", t: SCENE.surviveStamp, gain: 0.55 },
-  { file: "msg.wav", t: SCENE.slotIn, gain: 0.6 },
-  // ростер: сетка + роли + вылет призрака
-  { file: "pop1.wav", t: SCENE.hudIn + 0.05, gain: 0.5 },
-  { file: "error.wav", t: SCENE.ghostOut, gain: 0.55 },
-  { file: "pop2.wav", t: SCENE.kievHi, gain: 0.6 },
-  { file: "pop3.wav", t: SCENE.novgorodHi, gain: 0.6 },
-  { file: "stamp.wav", t: SCENE.khazariaHi, gain: 0.85 },
-  // призвание: 862 + драка + найм + цитата
-  { file: "stamp.wav", t: SCENE.year862, gain: 0.8 },
-  { file: "sword.wav", t: SCENE.tribesFight, gain: 0.5 },
-  { file: "sword.wav", t: SCENE.tribesFight + 0.85, gain: 0.4 },
-  { file: "pop2.wav", t: SCENE.hireCard, gain: 0.6 },
-  { file: "coin.wav", t: SCENE.hireCard + 0.12, gain: 0.45 },
-  { file: "quill.wav", t: SCENE.quoteIn, gain: 0.55 },
-  // олег: путь + хозяева + склейка + РУСЬ
-  { file: "pop1.wav", t: SCENE.olegCard, gain: 0.5 },
-  { file: "whoosh.wav", t: SCENE.kievIn, gain: 0.5 },
-  { file: "error.wav", t: SCENE.ownersOut, gain: 0.45 },
-  { file: "ding.wav", t: SCENE.glueIn, gain: 0.6 },
-  { file: "stamp.wav", t: SCENE.rusSlam, gain: 0.85 },
-  { file: "boom.wav", t: SCENE.rusSlam + 0.04, gain: 0.7 },
-  // царьград: ворота + ладьи + щит + оттиск
-  { file: "stamp.wav", t: SCENE.year907, gain: 0.8 },
-  { file: "whoosh.wav", t: SCENE.boatsIn, gain: 0.4 },
-  { file: "horn.wav", t: SCENE.tsarIn, gain: 0.65 },
-  { file: "sword.wav", t: SCENE.shieldHit, gain: 0.85 },
-  { file: "stamp.wav", t: SCENE.weStamp, gain: 0.8 },
-  // топ карты
-  { file: "pop1.wav", t: SCENE.boardIn, gain: 0.5 },
-  { file: "sting.wav", t: SCENE.khanatGlow, gain: 0.6 },
-  { file: "sword.wav", t: SCENE.swordsFly, gain: 0.6 },
-  { file: "coin.wav", t: SCENE.swordsFly + 0.25, gain: 0.45 },
-  { file: "stamp.wav", t: SCENE.tributeStamp, gain: 0.75 },
-  // игорь
-  { file: "stamp.wav", t: SCENE.year945, gain: 0.8 },
-  { file: "pop2.wav", t: SCENE.igorCard, gain: 0.55 },
-  { file: "coin.wav", t: SCENE.igorCard + 0.15, gain: 0.5 },
-  { file: "error.wav", t: SCENE.badMove, gain: 0.75 },
-  { file: "error.wav", t: SCENE.igorFall, gain: 0.7 },
-  { file: "sting.wav", t: SCENE.igorFall + 0.12, gain: 0.4 },
-  // клифф: Ольга + конверт + ДА.
-  { file: "pop2.wav", t: SCENE.olgaCard, gain: 0.6 },
-  { file: "msg.wav", t: SCENE.inviteEnv, gain: 0.6 },
-  { file: "boom.wav", t: SCENE.daSlam, gain: 0.9 },
-  { file: "msg.wav", t: SCENE.nextSeries, gain: 0.5 },
+  // эмбиент ночи (низкий ветер)
+  { file: "wind.wav", t: 0.05, gain: 0.42 },
+  { file: "wind.wav", t: 9.0, gain: 0.3 },
+  { file: "night.wav", t: 30.0, gain: 0.35 },
+  // хук: жёсткий кат + титул + стоп-момент
+  { file: "boom.wav", t: SCENE.faceIn + 0.02, gain: 0.9 },
+  { file: "sting.wav", t: SCENE.hookShock, gain: 0.55 },
+  ...(HOOK === "B" ? [{ file: "fire.wav", t: SCENE.faceIn + 0.1, gain: 0.4 } as Sfx] : []),
+  // контекст
+  { file: "msg.wav", t: SCENE.hudIn, gain: 0.5 },
+  { file: "pop2.wav", t: SCENE.igorIn, gain: 0.5 },
+  { file: "error.wav", t: SCENE.igorDead, gain: 0.6 },
+  { file: "sting.wav", t: SCENE.igorDead + 0.1, gain: 0.4 },
+  // мал
+  { file: "pop3.wav", t: SCENE.malIn, gain: 0.55 },
+  { file: "coin.wav", t: SCENE.schemeIn, gain: 0.45 },
+  // план
+  { file: "stamp.wav", t: SCENE.daMini, gain: 0.6 },
+  { file: "pop1.wav", t: SCENE.threeIn + 0.1, gain: 0.45 },
+  { file: "pop2.wav", t: SCENE.threeIn + 0.24, gain: 0.45 },
+  { file: "pop3.wav", t: SCENE.threeIn + 0.38, gain: 0.45 },
+  // месть 1: лодья
+  { file: "whoosh.wav", t: SCENE.r1Boat, gain: 0.45 },
+  { file: "knock.wav", t: SCENE.r1Pit, gain: 0.6 },
+  { file: "boom.wav", t: SCENE.r1Sink, gain: 0.7 },
+  { file: "stamp.wav", t: SCENE.r1Stamp, gain: 0.85 },
+  // месть 2: баня
+  { file: "pop2.wav", t: SCENE.r2Banya, gain: 0.5 },
+  { file: "knock.wav", t: SCENE.r2Door, gain: 0.8 },
+  { file: "fire.wav", t: SCENE.r2Fire, gain: 0.7 },
+  { file: "stamp.wav", t: SCENE.r2Stamp, gain: 0.7 },
+  // месть 3: голуби
+  { file: "pop3.wav", t: SCENE.r3Dove, gain: 0.5 },
+  { file: "coin.wav", t: SCENE.r3Sulfur, gain: 0.4 },
+  { file: "whoosh.wav", t: SCENE.r3Fly, gain: 0.5 },
+  { file: "pop1.wav", t: SCENE.r3City, gain: 0.5 },
+  { file: "fire.wav", t: SCENE.r3Fire, gain: 0.8 },
+  { file: "boom.wav", t: SCENE.r3Fire + 0.3, gain: 0.6 },
+  { file: "stamp.wav", t: SCENE.r3Stamp, gain: 0.85 },
+  // итог
+  { file: "ding.wav", t: SCENE.aCrown, gain: 0.6 },
+  { file: "error.wav", t: SCENE.aGone, gain: 0.55 },
+  // клифф
+  { file: "pop1.wav", t: SCENE.cSon, gain: 0.5 },
+  { file: "msg.wav", t: SCENE.cNext, gain: 0.5 },
+  { file: "boom.wav", t: SCENE.cIdu, gain: 0.85 },
   // эндкард
-  { file: "endcard.wav", t: SCENE.voteIn, gain: 0.85 },
-  { file: "pop2.wav", t: SCENE.optA, gain: 0.5 },
-  { file: "pop3.wav", t: SCENE.optB, gain: 0.5 },
+  { file: "endcard.wav", t: SCENE.tVote, gain: 0.85 },
+  { file: "pop2.wav", t: SCENE.tOptA, gain: 0.5 },
+  { file: "pop3.wav", t: SCENE.tOptB, gain: 0.5 },
 ];
 
-export const CAPTIONS_OFF = SCENE.endCardIn - 0.1; // end card takes over
+export const CAPTIONS_OFF = SCENE.tVote - 0.08; // эндкард берёт финал на себя

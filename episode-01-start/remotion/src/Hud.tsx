@@ -1,96 +1,63 @@
-// Hud.tsx — persistent 3-chip scoreboard (retention machine, ref-style)
-// «РУСЬ: БИТВА ЗА 1000 ЛЕТ»: ГОД (ролл) · В ИГРЕ (счётчик вылетов) · ЛИДЕР (строка).
-// Chips enter as ONE unit (40-80ms stagger inside), counters roll on change.
+// Hud.tsx — верхняя панель «ТЁМНОЙ РУСИ»: слева 945 · РУСЬ, справа МЕСТЬ x/3
+// (машина досматривания), под ними полоса прогресса серии.
 import React from "react";
-import { interpolate, spring, useCurrentFrame, useVideoConfig, Easing } from "remotion";
-import { COLORS, LAYOUT } from "./theme";
-import { HUD_YEAR, HUD_IN_GAME, HUD_MAIN, fmtYear, SCENE, HudStep } from "./data";
-
-const useCount = (steps: HudStep[]): { text: string; changeT: number; flash?: string } => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  const t = frame / fps;
-  let idx = 0;
-  for (let i = 0; i < steps.length; i++) if (t >= steps[i].t) idx = i;
-  const cur = steps[idx];
-  const prev = steps[Math.max(0, idx - 1)];
-  if (idx === 0) return { text: fmtYear(cur.value), changeT: -1 };
-  const p = interpolate(t, [cur.t, cur.t + 0.55], [0, 1], {
-    extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.out(Easing.quad),
-  });
-  const v = Math.round(prev.value + (cur.value - prev.value) * p);
-  return { text: fmtYear(v), changeT: cur.t, flash: cur.flash };
-};
-
-const useMain = (): { text: string; changeT: number; flash?: string } => {
-  const frame = useCurrentFrame();
-  const t = frame / 30;
-  let idx = 0;
-  for (let i = 0; i < HUD_MAIN.length; i++) if (t >= HUD_MAIN[i].t) idx = i;
-  const cur = HUD_MAIN[idx];
-  return { text: cur.value, changeT: idx === 0 ? -1 : cur.t, flash: cur.flash };
-};
-
-const FLASH_COLORS: Record<string, string> = {
-  red: COLORS.red,
-  green: COLORS.green,
-  yellow: COLORS.gold,
-  gold: COLORS.gold,
-};
-
-const Chip: React.FC<{
-  label: string; value: string; accent: string; delay: number; flash?: string | null; flashNow?: boolean;
-}> = ({ label, value, accent, delay, flash, flashNow }) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  const base = Math.round((SCENE.hudIn + delay) * fps);
-  const inS = spring({ frame: frame - base, fps, config: { damping: 200 }, durationInFrames: 22 });
-  const pop = spring({ frame: frame - base - 6, fps, config: { damping: 14, stiffness: 160 }, durationInFrames: 14 });
-  const s = inS * (1 + (flashNow ? pop * 0.07 : 0));
-  return (
-    <div style={{
-      opacity: inS,
-      transform: `scale(${s})`,
-      background: "rgba(20,16,10,0.88)",
-      border: `2.5px solid ${flash ?? COLORS.border}`,
-      borderRadius: 18,
-      padding: "10px 16px 12px",
-      width: 318,
-      boxShadow: `0 6px 24px rgba(0,0,0,0.45)${flash ? `, 0 0 26px ${flash}44` : ""}`,
-      textAlign: "center",
-    }}>
-      <div style={{ color: COLORS.inkDim, fontSize: 24, fontWeight: 700, letterSpacing: 1.6 }}>{label}</div>
-      <div style={{ color: accent, fontSize: value.length > 8 ? 33 : 44, fontWeight: 800, lineHeight: 1.08, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{value}</div>
-    </div>
-  );
-};
+import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
+import { COLORS, FONT, LAYOUT } from "./theme";
+import { SCENE, HUD_REVENGE, TOTAL } from "./data";
 
 export const Hud: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
 
-  const year = useCount(HUD_YEAR);
-  const inGame = useCount(HUD_IN_GAME);
-  const main = useMain();
+  // эндкард забирает кадр
+  if (t < SCENE.hudIn || t >= SCENE.tVote) return null;
 
-  // end card takes the full stage — HUD steps aside
-  if (t >= SCENE.endCardIn) return null;
+  const inS = spring({ frame: frame - Math.round((SCENE.hudIn + 0.05) * fps), fps, config: { damping: 200 }, durationInFrames: 22 });
 
-  const yearFlash = year.changeT > 0 && t - year.changeT < 0.8 ? FLASH_COLORS[year.flash ?? "yellow"] : null;
-  const mainFlash = main.changeT > 0 && t - main.changeT < 0.8 ? FLASH_COLORS[main.flash ?? "red"] : null;
+  // счётчик местей
+  let n = 0;
+  let changeT = -1;
+  for (const s of HUD_REVENGE) {
+    if (t >= s.t + 0.05) { if (s.value > n) { n = s.value; changeT = s.t; } }
+  }
+  const pop = spring({ frame: frame - Math.round((changeT + 0.05) * fps), fps, config: { damping: 14, stiffness: 160 }, durationInFrames: 14 });
+
+  // прогресс серии
+  const prog = interpolate(t, [0, TOTAL], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+
+  const warm = n >= 3;
 
   return (
-    <div style={{
-      position: "absolute", top: LAYOUT.hudTop, left: 0, right: 0,
-      display: "flex", justifyContent: "center", gap: 13,
-    }}>
-      <Chip label="ГОД" value={year.text} accent={COLORS.gold} delay={0}
-        flashNow={year.changeT > 0 && t - year.changeT < 0.6} flash={yearFlash} />
-      <Chip label="В ИГРЕ" value={String(inGame.text)} accent={COLORS.paper} delay={0.07}
-        flashNow={inGame.changeT > 0 && t - inGame.changeT < 0.6} />
-      <Chip label="ЛИДЕР" value={main.text} accent={main.changeT > 0 ? (main.flash === "red" ? COLORS.red : COLORS.gold) : COLORS.inkDim} delay={0.14}
-        flashNow={main.changeT > 0 && t - main.changeT < 0.6} flash={mainFlash} />
+    <div style={{ position: "absolute", top: LAYOUT.hudTop - 26, left: 0, right: 0, opacity: inS }}>
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "0 46px", alignItems: "center" }}>
+        {/* год и место */}
+        <div style={{
+          fontFamily: `${FONT}, sans-serif`, fontWeight: 800, fontSize: 38, letterSpacing: 2,
+          color: COLORS.paper, background: "rgba(11,8,6,0.82)",
+          border: `2.5px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 22px",
+          fontVariantNumeric: "tabular-nums",
+        }}>945 · РУСЬ</div>
+        {/* счётчик местей */}
+        <div style={{
+          fontFamily: `${FONT}, sans-serif`, fontWeight: 800, fontSize: 38, letterSpacing: 2,
+          color: warm ? COLORS.fireHi : COLORS.red, background: "rgba(11,8,6,0.82)",
+          border: `2.5px solid ${warm ? COLORS.fireMid : COLORS.red}`, borderRadius: 14,
+          padding: "10px 22px", whiteSpace: "nowrap",
+          transform: `scale(${1 + (changeT > 0 ? pop * 0.09 : 0)})`,
+          boxShadow: `0 0 ${10 + n * 8}px ${warm ? COLORS.fireMid : COLORS.red}55`,
+        }}>
+          МЕСТЬ <span style={{ color: COLORS.ink }}>{n}</span>/3
+        </div>
+      </div>
+      {/* полоса прогресса серии — тонкая золотая линия */}
+      <div style={{ margin: "12px 46px 0", height: 5, background: "rgba(242,232,208,0.14)", borderRadius: 3 }}>
+        <div style={{
+          width: `${prog * 100}%`, height: "100%",
+          background: `linear-gradient(90deg, ${COLORS.red}, ${COLORS.fireMid}, ${COLORS.gold})`,
+          borderRadius: 3, boxShadow: `0 0 12px ${COLORS.fireMid}66`,
+        }} />
+      </div>
     </div>
   );
 };

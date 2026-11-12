@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Generate Russian VO for «РУСЬ ЗА 1000 ЛЕТ» episode 1 via ElevenLabs.
+"""Generate Russian VO for «ТЁМНАЯ РУСЬ» episode 1 «ОНА СКАЗАЛА "ДА"».
 
-Voice: Chris (Charming, Down-to-Earth), model eleven_multilingual_v2.
-Natural pace, no post speed-up (keeps the voice human).
-Word timings come from the character alignment of the /with-timestamps endpoint.
+v3 «story-first»: одна тёмная драма на серию (формат viral dark-history),
+3 варианта хука для A/B-теста первых 3 секунд (research: hook stack,
+face-first, 70-85% удержания на 3с => x2.2 просмотров).
 
-Requires: ELEVENLABS_API_KEY environment variable (never commit it!).
-Produces: assets/vo/line_XX.wav + timeline.json with word timings.
+Провайдеры озвучки (PROVIDER):
+  - "edge": Microsoft edge-tts, голос ru-RU-DmitryNeural (бесплатный).
+    Квота ElevenLabs кончилась 2026-11-12 —edge как основной путь.
+    Пословные тайминги: SentenceBoundary + распределение по символам с паузами.
+  - "elevenlabs": Chris (eleven_multilingual_v2) с character alignment.
+    Вернуть PROVIDER="elevenlabs" после сброса квоты — тайминги точные.
+
+Produces: assets/vo/line_XX.wav + timeline-A/B/C.json (A = основной).
 """
+import asyncio
 import base64
 import json
 import os
@@ -17,10 +24,16 @@ import time
 import urllib.error
 import urllib.request
 
-API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
-if not API_KEY:
-    sys.exit("Set ELEVENLABS_API_KEY env var (create key at elevenlabs.io — do NOT commit it).")
+PROVIDER = os.environ.get("VO_PROVIDER", "edge")
 
+# ============ EDGE-TTS (основной провайдер) ============
+EDGE_VOICE = "ru-RU-DmitryNeural"   # мужской, низковатый — тёмный рассказчик
+EDGE_RATE = "+30%"                  # Dmitry медленнее Chris: держим TikTok-темп
+TEMPO = 1.075                       # финальный дожим в ffmpeg (незаметен на речи);
+                                     # тайминги слов делятся на TEMPO синхронно
+
+# ============ ELEVENLABS (fallback/возврат к Chris) ============
+API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 VOICE_ID = "iP95p4xoKVk53GoZ742B"  # Chris — Charming, Down-to-Earth
 VOICE_NAME = "Chris"
 MODEL = "eleven_multilingual_v2"
@@ -37,71 +50,161 @@ CACHE = os.path.join(BASE, "tts-cache")
 os.makedirs(OUT, exist_ok=True)
 os.makedirs(CACHE, exist_ok=True)
 
-# Each line: id, tts text (spoken), gap after line (ms), beat key
-LINES = [
-    dict(id="hook",      gap=380, beat="hook",
-         text="Тысяча лет. Двенадцать игроков. Выживет один. И это будет та, которой ещё нет на карте."),
-    dict(id="roster",    gap=360, beat="roster",
-         text="Правила простые: города воюют, предают и вылетают навсегда. Киев — красавчик. Новгород — торгаш. Хазария — босс, и ей платят все."),
-    dict(id="invite",    gap=380, beat="invite",
-         text="862 год. Племена устали резать друг друга и сделали ход, который изменил всё: наняли викинга рулить. Земля велика, а порядка нет."),
-    dict(id="oleg",      gap=360, beat="oleg",
-         text="Его родич Олег заехал в Киев, вырезал хозяев и склеил север с югом. Так на карте появилась Русь."),
-    dict(id="tsargrad",  gap=380, beat="tsargrad",
-         text="907 год. Русь бьёт по Царьграду — богатейшему городу планеты. По легенде, Олег прибил щит к воротам: мы были здесь."),
-    dict(id="top",       gap=360, beat="top",
-         text="Но топ карты — не Русь. Номер один — Хазария. Даже дань она берёт мечами. По мечу с дома."),
-    dict(id="igor",      gap=400, beat="igor",
-         text="945 год. Князь Игорь взял дань и вернулся за добавкой. Плохой ход. Древляне убили его."),
-    dict(id="cliff",     gap=420, beat="cliff",
-         text="И тут же позвали его вдову Ольгу — замуж. За убийцу мужа. Она сказала: да. Что она сделала дальше — в следующей серии."),
-    dict(id="teaser",    gap=280, beat="teaser",
-         text="Пиши в комменты: месть Ольги или конец Хазарии. Серия два — по твоему голосу."),
+# ============ ХУКИ: 3 варианта A/B/C (in medias res, research-backed) ============
+# A «любопытство»: предложение + немыслимое «да» (в основную серию)
+# B «шок-деталь»: сожгла город из-за трёх голубей (абсурдно-конкретно)
+# C «приговор»: предложение убийц -> через год их не стало
+HOOKS = dict(
+    hookA=dict(id="hookA", file="hookA", gap=340, beat="hook",
+               text="Ей предложили выйти замуж — за убийцу мужа. Она сказала: да."),
+    hookB=dict(id="hookB", file="hookB", gap=340, beat="hook",
+               text="Она сожгла целый город. Из-за трёх голубей."),
+    hookC=dict(id="hookC", file="hookC", gap=340, beat="hook",
+               text="Убийцы мужа сделали ей предложение. Через год от них ничего не осталось."),
+)
+
+# ============ ТЕЛО ИСТОРИИ (одинаково во всех вариантах) ============
+BODY = [
+    dict(id="context", gap=340, beat="context",
+         text="Реальная история. 945 год. Древляне убили князя Игоря — мужа Ольги."),
+    dict(id="mal", gap=320, beat="mal",
+         text="Их князь Мал сразу позвал её замуж. Расчёт простой: жена всё простит — земли достанутся ему."),
+    dict(id="plan", gap=360, beat="plan",
+         text="Она сказала «да». А про себя запомнила три мести. Одна страшнее другой."),
+    dict(id="revenge1", gap=380, beat="revenge1",
+         text="Месть первая. Послы приплыли за ней в лодье. Она велела выкопать яму — и закопала их живьём. Вместе с лодьёй."),
+    dict(id="revenge2", gap=360, beat="revenge2",
+         text="Месть вторая. Старейшин она отправила в баню. Заперла дверь. И подожгла."),
+    dict(id="revenge3", gap=430, beat="revenge3",
+         text="Месть третья — гениальная. Она попросила у города по три голубя. К лапам привязала серу. Птицы полетели домой. Искоростень сгорел дотла."),
+    dict(id="after", gap=360, beat="after",
+         text="Так вдова из летописи стала первой правительницей Руси. А древлян на карте больше нет."),
+    dict(id="cliff", gap=400, beat="cliff",
+         text="Её сын скажет два слова — и сотрёт целую империю. Серия два: «Иду на вы»."),
+    dict(id="teaser", gap=260, beat="teaser",
+         text="Пиши в комменты: один — за Святослава, два — за Хазарию."),
 ]
 
 # Semantic word highlighting per line: word index -> color
 # (indexes count words WITHOUT punctuation, standalone dashes skipped)
-# hook: Тысяча(0) лет(1) Двенадцать(2) игроков(3) Выживет(4) один(5) И(6)
-#   это(7) будет(8) та(9) которой(10) ещё(11) нет(12) на(13) карте(14)
+# hookA: Ей(0) предложили(1) выйти(2) замуж(3) за(4) убийцу(5) мужа(6)
+#   Она(7) сказала(8) да(9)
 HL = {
-    "hook":     {0: "yellow", 1: "yellow", 2: "cyan", 3: "cyan", 4: "red", 5: "red", 12: "red", 14: "cyan"},
-    # roster: Правила(0) простые(1) города(2) воюют(3) предают(4) и(5) вылетают(6)
-    #   навсегда(7) Киев(8) красавчик(9) Новгород(10) торгаш(11) Хазария(12)
-    #   босс(13) и(14) ей(15) платят(16) все(17)
-    "roster":   {6: "red", 7: "red", 8: "yellow", 9: "cyan", 10: "yellow", 11: "cyan", 12: "red", 13: "red", 16: "yellow", 17: "red"},
-    # invite: 862(0) год(1) Племена(2) устали(3) резать(4) друг(5) друга(6)
-    #   и(7) сделали(8) ход(9) который(10) изменил(11) всё(12) наняли(13)
-    #   викинга(14) рулить(15) Земля(16) велика(17) а(18) порядка(19) нет(20)
-    "invite":   {0: "yellow", 4: "red", 9: "yellow", 11: "green", 12: "green", 13: "cyan", 14: "cyan", 15: "cyan", 16: "yellow", 17: "yellow", 19: "red", 20: "red"},
-    # oleg: Его(0) родич(1) Олег(2) заехал(3) в(4) Киев(5) вырезал(6) хозяев(7)
-    #   и(8) склеил(9) север(10) с(11) югом(12) Так(13) на(14) карте(15)
-    #   появилась(16) Русь(17)
-    "oleg":     {2: "cyan", 5: "cyan", 6: "red", 9: "green", 16: "yellow", 17: "yellow"},
-    # tsargrad: 907(0) год(1) Русь(2) бьёт(3) по(4) Царьграду(5) богатейшему(6)
-    #   городу(7) планеты(8) По(9) легенде(10) Олег(11) прибил(12) щит(13)
-    #   к(14) воротам(15) мы(16) были(17) здесь(18)
-    "tsargrad": {0: "yellow", 5: "cyan", 6: "yellow", 7: "yellow", 8: "yellow", 10: "cyan", 12: "red", 13: "yellow", 16: "cyan", 17: "cyan", 18: "cyan"},
-    # top: Но(0) топ(1) карты(2) не(3) Русь(4) Номер(5) один(6) Хазария(7)
-    #   Даже(8) дань(9) она(10) берёт(11) мечами(12) По(13) мечу(14) с(15)
-    #   дома(16)
-    "top":      {1: "yellow", 2: "yellow", 4: "cyan", 5: "yellow", 6: "yellow", 7: "red", 9: "yellow", 12: "yellow", 14: "yellow", 16: "cyan"},
-    # igor: 945(0) год(1) Князь(2) Игорь(3) взял(4) дань(5) и(6) вернулся(7)
-    #   за(8) добавкой(9) Плохой(10) ход(11) Древляне(12) убили(13) его(14)
-    "igor":     {0: "yellow", 3: "cyan", 5: "yellow", 9: "red", 10: "red", 11: "red", 13: "red"},
-    # cliff: И(0) тут(1) же(2) позвали(3) его(4) вдову(5) Ольгу(6) замуж(7)
-    #   За(8) убийцу(9) мужа(10) Она(11) сказала(12) да(13) Что(14) она(15)
-    #   сделала(16) дальше(17) в(18) следующей(19) серии(20)
-    "cliff":    {6: "cyan", 7: "yellow", 9: "red", 10: "red", 11: "cyan", 12: "cyan", 13: "yellow", 17: "red", 19: "green", 20: "green"},
-    # teaser: Пиши(0) в(1) комменты(2) месть(3) Ольги(4) или(5) конец(6)
-    #   Хазарии(7) Серия(8) два(9) по(10) твоему(11) голосу(12)
-    "teaser":   {2: "yellow", 3: "red", 4: "cyan", 6: "red", 7: "red", 9: "yellow", 11: "green", 12: "green"},
+    "hookA": {3: "yellow", 5: "red", 6: "red", 7: "cyan", 8: "cyan", 9: "yellow"},
+    # hookB: Она(0) сожгла(1) целый(2) город(3) Из(4) за(5) трёх(6) голубей(7)
+    "hookB": {1: "red", 2: "red", 3: "red", 6: "yellow", 7: "cyan"},
+    # hookC: Убийцы(0) мужа(1) сделали(2) ей(3) предложение(4) Через(5) год(6)
+    #   от(7) них(8) ничего(9) не(10) осталось(11)
+    "hookC": {0: "red", 1: "red", 4: "yellow", 6: "cyan", 11: "red"},
+    # context: Реальная(0) история(1) 945(2) год(3) Древляне(4) убили(5)
+    #   князя(6) Игоря(7) мужа(8) Ольги(9)
+    "context": {0: "green", 1: "green", 2: "yellow", 4: "red", 5: "red", 7: "cyan", 9: "cyan"},
+    # mal: Их(0) князь(1) Мал(2) сразу(3) позвал(4) её(5) замуж(6) Расчёт(7)
+    #   простой(8) жена(9) всё(10) простит(11) земли(12) достанутся(13) ему(14)
+    "mal": {2: "cyan", 6: "yellow", 7: "yellow", 8: "yellow", 9: "red", 12: "yellow", 13: "yellow"},
+    # plan: Она(0) сказала(1) да(2) А(3) про(4) себя(5) запомнила(6) три(7)
+    #   мести(8) Одна(9) страшнее(10) другой(11)
+    "plan": {2: "yellow", 6: "cyan", 7: "red", 8: "red", 10: "red"},
+    # revenge1: Месть(0) первая(1) Послы(2) приплыли(3) за(4) ней(5) в(6)
+    #   лодье(7) Она(8) велела(9) выкопать(10) яму(11) и(12) закопала(13)
+    #   их(14) живьём(15) Вместе(16) с(17) лодьёй(18)
+    "revenge1": {0: "yellow", 1: "yellow", 7: "cyan", 11: "yellow", 13: "red", 15: "red"},
+    # revenge2: Месть(0) вторая(1) Старейшин(2) она(3) отправила(4) в(5)
+    #   баню(6) Заперла(7) дверь(8) И(9) подожгла(10)
+    "revenge2": {0: "yellow", 1: "yellow", 6: "cyan", 8: "yellow", 10: "red"},
+    # revenge3: Месть(0) третья(1) гениальная(2) Она(3) попросила(4) у(5)
+    #   города(6) по(7) три(8) голубя(9) К(10) лапам(11) привязала(12) серу(13)
+    #   Птицы(14) полетели(15) домой(16) Искоростень(17) сгорел(18) дотла(19)
+    "revenge3": {0: "yellow", 1: "yellow", 2: "green", 8: "cyan", 9: "cyan", 13: "yellow", 14: "cyan", 15: "cyan", 16: "cyan", 17: "red", 18: "red", 19: "red"},
+    # after: Так(0) вдова(1) из(2) летописи(3) стала(4) первой(5)
+    #   правительницей(6) Руси(7) А(8) древлян(9) на(10) карте(11) больше(12) нет(13)
+    "after": {1: "cyan", 5: "yellow", 6: "yellow", 7: "yellow", 9: "red", 13: "red"},
+    # cliff: Её(0) сын(1) скажет(2) два(3) слова(4) и(5) сотрёт(6) целую(7)
+    #   империю(8) Серия(9) два(10) Иду(11) на(12) вы(13)
+    "cliff": {1: "cyan", 3: "yellow", 4: "yellow", 6: "red", 8: "red", 10: "yellow", 11: "green", 12: "green", 13: "green"},
+    # teaser: Пиши(0) в(1) комменты(2) один(3) за(4) Святослава(5) два(6)
+    #   за(7) Хазарию(8)
+    "teaser": {2: "yellow", 3: "green", 5: "cyan", 6: "green", 8: "red"},
 }
 
 MAX_CHUNK = 4  # words per caption group
 ATTEMPTS = 6
 
-_total_chars = sum(len(l["text"]) for l in LINES)
-print(f"Сценарий: {len(LINES)} строк, {_total_chars} символов (квота ключа расходуется только на новых синтезах)")
+# Паузы после знаков (сек) для раскидки слов внутри предложения
+PAUSE = {".": 0.26, "!": 0.26, "?": 0.26, "…": 0.26, ",": 0.14, ":": 0.16, ";": 0.16, "—": 0.18}
+
+
+def synth_edge(text: str):
+    """edge-tts -> (mp3_bytes, words list).
+    WordBoundary у endpoint не работает (NoAudioReceived) — берём
+    SentenceBoundary и раскидываем слова по длине символов + паузам.
+    """
+    import edge_tts
+
+    async def run():
+        comm = edge_tts.Communicate(text, EDGE_VOICE, rate=EDGE_RATE)
+        audio = bytearray()
+        sentences = []
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                audio.extend(chunk["data"])
+            elif chunk["type"] == "SentenceBoundary":
+                sentences.append(dict(
+                    text=chunk["text"],
+                    start=chunk["offset"] / 1e7,
+                    dur=chunk["duration"] / 1e7,
+                ))
+        return bytes(audio), sentences
+
+    for attempt in range(4):
+        try:
+            audio, sentences = asyncio.run(run())
+            if len(audio) > 3000:
+                break
+            raise RuntimeError(f"short audio ({len(audio)})")
+        except Exception as e:
+            if attempt == 3:
+                raise RuntimeError(f"edge-tts failed: {e}")
+            time.sleep(min(12, 4 + attempt * 3))  # фаст-фэйл: цикл снаружи добьёт
+    if not sentences:  # один без разбивки — весь текст одной «фразой»
+        sentences = [dict(text=text, start=0.0, dur=None)]
+
+    words = []
+    for s in sentences:
+        # токены: слово + следующий за ним знак препинания
+        import re
+        tokens = re.findall(r"[А-Яа-яЁёA-Za-z0-9]+[.,!?…:;—«»\"]*", s["text"])
+        if not tokens:
+            continue
+        weights = []
+        pauses = []
+        for tok in tokens:
+            body = re.sub(r"[^А-Яа-яЁёA-Za-z0-9]", "", tok)
+            weights.append(len(body) + 1.6)
+            pauses.append(PAUSE.get(tok[-1], 0.0) if len(tok) > len(body) else 0.0)
+        dur = s["dur"] if s["dur"] else 1.0
+        pause_total = sum(pauses)
+        speech = max(0.2, dur - pause_total)
+        wsum = sum(weights)
+        t = s["start"]
+        for i, tok in enumerate(tokens):
+            body = re.sub(r"[^А-Яа-яЁёA-Za-z0-9]", "", tok)
+            w_dur = speech * weights[i] / wsum
+            words.append(dict(text=body, start=round(t, 3), end=round(t + w_dur, 3)))
+            t += w_dur + pauses[i]
+    # конец последнего слова не дальше конца аудио; тайминги под atempo
+    return bytes(audio), [
+        dict(text=w["text"], start=round(w["start"] / TEMPO, 3), end=round(w["end"] / TEMPO, 3))
+        for w in words
+    ]
+
+
+def synth_elevenlabs(text: str):
+    """POST /text-to-speech/{id}/with-timestamps -> (mp3_bytes, alignment dict)."""
+
+ALL_LINES = list(HOOKS.values()) + BODY
+_total_chars = sum(len(l["text"]) for l in ALL_LINES)
+print(f"Сценарий: {len(BODY)} строк тела + {len(HOOKS)} хука, {_total_chars} символов")
 
 
 def synth(text: str):
@@ -178,97 +281,133 @@ def ffprobe_dur(path: str) -> float:
     return float(out.stdout.strip())
 
 
-def main():
-    timeline = {"voice": f"elevenlabs:{VOICE_NAME}", "model": MODEL, "fps": 30, "lines": []}
-    t = 0.35  # lead-in
-    for i, spec in enumerate(LINES):
-        cachef = os.path.join(CACHE, f"el_{i:02d}_{spec['id']}.json")
-        rawf = os.path.join(CACHE, f"el_{i:02d}_{spec['id']}.mp3")
-        wavf = os.path.join(OUT, f"line_{i:02d}_{spec['id']}.wav")
+def build_line(i: int, spec: dict, t: float):
+    """Synth/cache one line, return timeline dict + end time."""
+    cachef = os.path.join(CACHE, f"el_{spec['id']}.json")
+    rawf = os.path.join(CACHE, f"el_{spec['id']}.mp3")
+    wavf = os.path.join(OUT, f"line_{i:02d}_{spec.get('file', spec['id'])}.wav")
 
-        cached = None
-        if os.path.exists(cachef) and os.path.getsize(cachef) > 100:
-            cached = json.load(open(cachef))
-            if cached.get("text") != spec["text"]:
-                cached = None  # text changed -> re-synthesize
+    cached = None
+    if os.path.exists(cachef) and os.path.getsize(cachef) > 100:
+        cached = json.load(open(cachef))
+        if cached.get("text") != spec["text"] or cached.get("rate") != EDGE_RATE:
+            cached = None  # text changed -> re-synthesize
 
-        if cached is not None:
-            audio = None
-            words = cached["words"]
-            print(f"[{i+1}/{len(LINES)}] {spec['id']}: cached", flush=True)
+    if cached is not None:
+        audio = None
+        words = cached["words"]
+        print(f"  {spec['id']}: cached", flush=True)
+    else:
+        print(f"  synth «{spec['id']}» ({PROVIDER})", flush=True)
+        if PROVIDER == "edge":
+            audio, words = synth_edge(spec["text"])
         else:
-            print(f"[{i+1}/{len(LINES)}] synth «{spec['id']}»", flush=True)
-            audio, align = synth(spec["text"])
-            with open(rawf, "wb") as f:
-                f.write(audio)
+            audio, align = synth_elevenlabs(spec["text"])
             words = words_from_alignment(align)
-            with open(cachef, "w") as f:
-                json.dump({"text": spec["text"], "voice": VOICE_ID,
-                           "model": MODEL, "words": words}, f, ensure_ascii=False)
-            time.sleep(1.0)
+        with open(rawf, "wb") as f:
+            f.write(audio)
+        with open(cachef, "w") as f:
+            json.dump({"text": spec["text"], "rate": EDGE_RATE, "voice": EDGE_VOICE if PROVIDER == "edge" else VOICE_ID,
+                       "provider": PROVIDER, "model": MODEL, "words": words}, f, ensure_ascii=False)
+        time.sleep(0.4)
 
-        if audio is not None or not os.path.exists(wavf) or os.path.getsize(wavf) < 1000:
-            src = rawf if os.path.exists(rawf) else None
-            if src is None:
-                raise RuntimeError("no raw audio for " + spec["id"])
-            # studio chain: broadcast loudness, 48 kHz mono; NO tempo change
-            r = subprocess.run(
-                ["ffmpeg", "-y", "-v", "error", "-i", src,
-                 "-af", "highpass=f=70,loudnorm=I=-16:TP=-1.5:LRA=9",
-                 "-ar", "48000", "-ac", "1", wavf])
-            if r.returncode != 0:
-                raise RuntimeError("ffmpeg failed for " + spec["id"])
+    if audio is not None or not os.path.exists(wavf) or os.path.getsize(wavf) < 1000:
+        src = rawf if os.path.exists(rawf) else None
+        if src is None:
+            raise RuntimeError("no raw audio for " + spec["id"])
+        # studio chain: broadcast loudness, 48 kHz mono; NO tempo change
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", src,
+             "-af", f"highpass=f=70,atempo={TEMPO},loudnorm=I=-16:TP=-1.5:LRA=9" if PROVIDER == "edge" else "highpass=f=70,loudnorm=I=-16:TP=-1.5:LRA=9",
+             "-ar", "48000", "-ac", "1", wavf])
+        if r.returncode != 0:
+            raise RuntimeError("ffmpeg failed for " + spec["id"])
 
-        dur = ffprobe_dur(wavf)
-        scaled = [dict(text=w["text"],
-                       start=round(w["start"], 3),
-                       end=round(min(w["end"], dur), 3))
-                  for w in words]
+    dur = ffprobe_dur(wavf)
+    scaled = [dict(text=w["text"],
+                   start=round(w["start"], 3),
+                   end=round(min(w["end"], dur), 3))
+              for w in words]
 
-        start = round(t, 3)
-        end = round(t + dur, 3)
-        # группировка <=4 слов; группа НЕ должна кончаться предлогом/союзом —
-        # иначе караоке-строка обрывается на «...ПО МЕЧУ С» и выглядит битой
-        PREPS = {"с", "в", "и", "а", "к", "о", "у", "на", "за", "до", "из", "от", "по", "не", "но", "что", "или"}
-        idx_groups = []
-        cur = []
-        for j, w in enumerate(scaled):
-            cur.append(j)
-            if len(cur) >= MAX_CHUNK and j < len(scaled) - 1:
-                if w["text"].lower() in PREPS and len(cur) > 1:
-                    idx_groups.append(cur[:-1])
-                    cur = [j]
-                else:
-                    idx_groups.append(cur)
-                    cur = []
-        if cur:
-            idx_groups.append(cur)
-        groups = []
-        for g in idx_groups:
-            chunk = [scaled[k] for k in g]
-            groups.append(dict(
-                start=round(start + chunk[0]["start"], 3),
-                end=round(start + chunk[-1]["end"] + 0.18, 3),
-                words=[dict(text=w["text"],
-                            start=round(start + w["start"], 3),
-                            end=round(start + w["end"], 3),
-                            color=HL.get(spec["id"], {}).get(k))
-                       for k, w in zip(g, chunk)],
-            ))
-        timeline["lines"].append(dict(
-            id=spec["id"], beat=spec["beat"], tempo=1.0,
-            text=spec["text"], start=start, end=end, dur=round(dur, 3),
-            words=[dict(text=w["text"], start=round(start + w["start"], 3),
-                        end=round(start + w["end"], 3)) for w in scaled],
-            groups=groups,
+    start = round(t, 3)
+    end = round(t + dur, 3)
+    # группировка <=4 слов; группа НЕ должна кончаться предлогом/союзом —
+    # иначе караоке-строка обрывается на «...ПО МЕЧУ С» и выглядит битой
+    PREPS = {"с", "в", "и", "а", "к", "о", "у", "на", "за", "до", "из", "от", "по", "не", "но", "что", "или"}
+    idx_groups = []
+    cur = []
+    for j, w in enumerate(scaled):
+        cur.append(j)
+        if len(cur) >= MAX_CHUNK and j < len(scaled) - 1:
+            if w["text"].lower() in PREPS and len(cur) > 1:
+                idx_groups.append(cur[:-1])
+                cur = [j]
+            else:
+                idx_groups.append(cur)
+                cur = []
+    if cur:
+        idx_groups.append(cur)
+    groups = []
+    for g in idx_groups:
+        chunk = [scaled[k] for k in g]
+        groups.append(dict(
+            start=round(start + chunk[0]["start"], 3),
+            end=round(start + chunk[-1]["end"] + 0.18, 3),
+            words=[dict(text=w["text"],
+                        start=round(start + w["start"], 3),
+                        end=round(start + w["end"], 3),
+                        color=HL.get(spec["id"], {}).get(k))
+                   for k, w in zip(g, chunk)],
         ))
-        t = end + spec["gap"] / 1000.0
-        print(f"[{i+1}/{len(LINES)}] {spec['id']}: dur={dur:.2f}s start={start:.2f} words={len(scaled)}", flush=True)
+    tl = dict(
+        id="hook", file=spec["file"], beat=spec["beat"], tempo=1.0,
+        text=spec["text"], start=start, end=end, dur=round(dur, 3),
+        words=[dict(text=w["text"], start=round(start + w["start"], 3),
+                    end=round(start + w["end"], 3)) for w in scaled],
+        groups=groups,
+    ) if spec in HOOKS.values() else dict(
+        id=spec["id"], beat=spec["beat"], tempo=1.0,
+        text=spec["text"], start=start, end=end, dur=round(dur, 3),
+        words=[dict(text=w["text"], start=round(start + w["start"], 3),
+                    end=round(start + w["end"], 3)) for w in scaled],
+        groups=groups,
+    )
+    print(f"  {spec['id']}: dur={dur:.2f}s start={start:.2f} words={len(scaled)}", flush=True)
+    return tl, end
 
-    timeline["totalDuration"] = round(t + 1.7, 3)
+
+def build_timeline(hook_key: str):
+    """hook_key + BODY -> готовый timeline dict."""
+    timeline = {"voice": f"elevenlabs:{VOICE_NAME}", "model": MODEL, "fps": 30,
+                "lines": [], "hook": hook_key}
+    t = 0.22  # lead-in: хук должен ударить в первую четверть секунды
+    tl_hook, end = build_line(0, HOOKS[hook_key], t)
+    timeline["lines"].append(tl_hook)
+    t = end + HOOKS[hook_key]["gap"] / 1000.0
+    for i, spec in enumerate(BODY, start=1):
+        tl, end = build_line(i, spec, t)
+        timeline["lines"].append(tl)
+        t = end + spec["gap"] / 1000.0
+    timeline["totalDuration"] = round(t + 1.9, 3)
+    return timeline
+
+
+def main():
+    os.makedirs(os.path.join(OUT, "..", "..", "remotion", "src", "timelines"), exist_ok=True)
+    for variant in ("A", "B", "C"):
+        print(f"=== TIMELINE {variant} ===")
+        tl = build_timeline(f"hook{variant}")
+        path = os.path.join(OUT, f"timeline-{variant}.json")
+        with open(path, "w") as f:
+            json.dump(tl, f, ensure_ascii=False, indent=1)
+        # копии для remotion (swap перед рендером варианта)
+        for p in (os.path.join(OUT, "..", "..", "remotion", "src", "timelines", f"timeline-{variant}.json"),):
+            with open(p, "w") as f:
+                json.dump(tl, f, ensure_ascii=False, indent=1)
+        print(f"  -> timeline-{variant}.json  TOTAL: {tl['totalDuration']}s")
+    # основной (по умолчанию A) — его импортирует data.ts
     with open(os.path.join(OUT, "timeline.json"), "w") as f:
-        json.dump(timeline, f, ensure_ascii=False, indent=1)
-    print(f"\nTOTAL: {timeline['totalDuration']}s")
+        json.dump(json.load(open(os.path.join(OUT, "timeline-A.json"))), f, ensure_ascii=False, indent=1)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
-  "name": "rus-episode-01-start",
+  "name": "rus-episode-01-da",
   "version": "1.0.0",
   "scripts": {
     "render": "remotion render Main out/episode-01.mp4",

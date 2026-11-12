@@ -37,14 +37,14 @@ export const Main: React.FC = () => {
       <Captions />
 
       {/* ===== AUDIO ===== */}
-      {/* VO lines */}
+      {/* VO lines (file: вариант хука A/B/C использует свой wav) */}
       {LINES.map((l, i) => {
         const from = Math.round(l.start * FPS);
         const dur = Math.ceil((l.end - l.start) * FPS) + 2;
         if (from >= durationInFrames) return null;
         return (
           <Sequence key={l.id} from={from} durationInFrames={dur}>
-            <Audio src={staticFile(`assets/vo/line_${String(i).padStart(2, "0")}_${l.id}.wav`)} volume={1} />
+            <Audio src={staticFile(`assets/vo/line_${String(i).padStart(2, "0")}_${l.file ?? l.id}.wav`)} volume={1} />
           </Sequence>
         );
       })}
